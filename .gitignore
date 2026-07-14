@@ -1,0 +1,43 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+*.swp
+*.swo
+*~
+
+# Xcode
+build/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xcworkspace/
+xcuserdata/
+*.xcodeproj/xcuserdata/
+DerivedData/
+
+# CocoaPods
+Pods/
+Podfile.lock
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Dependencies
+.DS_Store
+node_modules/
+
+# Build output
+*.app
+*.dSYM/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
