@@ -34,9 +34,9 @@ let lightTheme = AppThemeColors(
 let darkTheme = AppThemeColors(
     background: NSColor(hex: "#0f0f0f"),
     text: NSColor(white: 0.92, alpha: 1),
-    tabBarBackground: NSColor(hex: "#0f0f0f"),
-    tabSelected: NSColor(hex: "#232323"),
-    tabUnselected: NSColor(hex: "#0f0f0f")
+    tabBarBackground: NSColor(hex: "#232323"),
+    tabSelected: NSColor(hex: "#0f0f0f"),
+    tabUnselected: NSColor(hex: "#232323")
 )
 
 // MARK: - Autosave paths
@@ -188,8 +188,14 @@ final class TabButtonView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        tabBackground.setFill()
+        theme.tabUnselected.setFill()
         bounds.fill()
+        if isSelected || isHovered {
+            tabBackground.setFill()
+            NSBezierPath(roundedRect: bounds, xRadius: 7, yRadius: 7).fill()
+            // Keep the lower edge square and flush with the editor.
+            NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height / 2).fill()
+        }
     }
 }
 
