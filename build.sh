@@ -12,7 +12,7 @@ mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
 echo "Compiling..."
-swiftc -O -o "$APP_DIR/Contents/MacOS/$APP_NAME" Sources/main.swift -framework Cocoa
+swiftc -target "$(uname -m)-apple-macosx11.0" -O -o "$APP_DIR/Contents/MacOS/$APP_NAME" Sources/main.swift -framework Cocoa
 
 if [ -f "AppIcon.png" ]; then
     echo "Generating app icon..."
@@ -44,9 +44,11 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key>
     <string>com.local.notepadmac</string>
     <key>CFBundleVersion</key>
-    <string>1.0</string>
+    <string>1.1</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>1.1</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>

@@ -28,7 +28,7 @@ let lightTheme = AppThemeColors(
     text: NSColor(white: 0.1, alpha: 1),
     tabBarBackground: NSColor(white: 0.90, alpha: 1),
     tabSelected: NSColor.white,
-    tabUnselected: NSColor(white: 0.82, alpha: 1)
+    tabUnselected: NSColor(white: 0.90, alpha: 1)
 )
 
 let darkTheme = AppThemeColors(
@@ -47,6 +47,7 @@ enum Autosave {
         return base.appendingPathComponent("NotepadMac", isDirectory: true)
     }()
     static let tabsDir = dir.appendingPathComponent("tabs", isDirectory: true)
+    static let sessionFile = dir.appendingPathComponent("session.json")
     static let manifestFile = dir.appendingPathComponent("manifest.json")
 
     static func ensureDir() {
@@ -62,51 +63,106 @@ struct ManifestEntry: Codable {
     let filePath: String?
 }
 
+struct Session: Codable {
+    struct Note: Codable {
+        let id: String
+        let filePath: String?
+        let content: String
+    }
+    let notes: [Note]
+    let selectedID: String?
+}
+
 // MARK: - Tab bar button
 
 final class TabButtonView: NSView {
     private let titleLabel = NSTextField(labelWithString: "")
     private let closeButton = NSButton()
+    private var isSelected = false
+    private var isHovered = false
+    private var trackingArea: NSTrackingArea?
+    private var theme = lightTheme
+    private var preferredWidth: NSLayoutConstraint!
+    private var tabBackground = lightTheme.tabUnselected
     var onSelect: (() -> Void)?
     var onClose: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.cornerRadius = 6
+        preferredWidth = widthAnchor.constraint(equalToConstant: 180)
+        preferredWidth.priority = .defaultHigh
+        preferredWidth.isActive = true
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
 
-        titleLabel.font = .systemFont(ofSize: 12)
+        titleLabel.font = .systemFont(ofSize: 13)
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(titleLabel)
 
         closeButton.isBordered = false
+        closeButton.setAccessibilityLabel("Close tab")
+        closeButton.toolTip = "Close tab"
+        closeButton.isHidden = true
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         closeButton.target = self
         closeButton.action = #selector(closeTapped)
         addSubview(closeButton)
 
         NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -4),
-            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             closeButton.widthAnchor.constraint(equalToConstant: 16),
             closeButton.heightAnchor.constraint(equalToConstant: 16),
         ])
 
-        let click = NSClickGestureRecognizer(target: self, action: #selector(selectTapped))
-        addGestureRecognizer(click)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    @objc private func selectTapped() { onSelect?() }
+    override func mouseDown(with event: NSEvent) { onSelect?() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        trackingArea = area
+        // Recompute after a tab moves or is removed beneath the pointer.
+        if let window {
+            let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            isHovered = window.isKeyWindow && bounds.contains(point)
+        } else {
+            isHovered = false
+        }
+        updateAppearance()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        updateAppearance()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
+        updateAppearance()
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        onSelect?()
+        return true
+    }
     @objc private func closeTapped() { onClose?() }
 
     func configure(title: String, textColor: NSColor) {
         titleLabel.stringValue = title
+        setAccessibilityLabel(title)
+        toolTip = title
+        preferredWidth.constant = min(340, max(180, titleLabel.intrinsicContentSize.width + 56))
         titleLabel.textColor = textColor
         closeButton.attributedTitle = NSAttributedString(
             string: "\u{00D7}",
@@ -115,7 +171,25 @@ final class TabButtonView: NSView {
     }
 
     func setSelected(_ selected: Bool, theme: AppThemeColors) {
-        layer?.backgroundColor = (selected ? theme.tabSelected : theme.tabUnselected).cgColor
+        isSelected = selected
+        self.theme = theme
+        updateAppearance()
+    }
+
+    private func updateAppearance() {
+        closeButton.isHidden = !(isSelected || isHovered)
+        titleLabel.font = .systemFont(ofSize: 13, weight: isSelected ? .medium : .regular)
+        titleLabel.textColor = theme.text.withAlphaComponent(isSelected || isHovered ? 1 : 0.75)
+        let background = isSelected ? theme.tabSelected :
+            (isHovered ? theme.tabUnselected.blended(withFraction: 0.35, of: theme.tabSelected) ?? theme.tabUnselected : theme.tabUnselected)
+        tabBackground = background
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        tabBackground.setFill()
+        bounds.fill()
     }
 }
 
@@ -161,6 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
     var wordWrapOn = true
     var currentFontSize: CGFloat = 13
     private var keyMonitor: Any?
+    private var isRestoringSession = false
 
     var activeTab: Tab? {
         guard let selected = tabView.selectedTabViewItem else { return nil }
@@ -210,7 +285,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
         tabStack = NSStackView()
         tabStack.orientation = .horizontal
         tabStack.alignment = .centerY
-        tabStack.spacing = 4
+        tabStack.spacing = 0
         tabStack.translatesAutoresizingMaskIntoConstraints = false
         tabBarContainer.addSubview(tabStack)
 
@@ -237,7 +312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
             tabBarContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             tabBarHeight,
 
-            tabStack.leadingAnchor.constraint(equalTo: tabBarContainer.leadingAnchor, constant: 8),
+            tabStack.leadingAnchor.constraint(equalTo: tabBarContainer.leadingAnchor),
             tabStack.centerYAnchor.constraint(equalTo: tabBarContainer.centerYAnchor),
             tabStack.trailingAnchor.constraint(lessThanOrEqualTo: addTabButton.leadingAnchor, constant: -4),
 
@@ -258,7 +333,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
 
     private func updateTabBarVisibility() {
         let shouldShow = tabs.count > 1
-        tabBarHeightConstraint.constant = shouldShow ? 32 : 0
+        tabBarHeightConstraint.constant = shouldShow ? 36 : 0
         tabBarContainer.isHidden = !shouldShow
     }
 
@@ -298,6 +373,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
         saveAs.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Close Tab", action: #selector(closeCurrentTab(_:)), keyEquivalent: "w")
+        let closeControl = fileMenu.addItem(withTitle: "Close Tab (Ctrl+W)", action: #selector(closeCurrentTab(_:)), keyEquivalent: "w")
+        closeControl.keyEquivalentModifierMask = [.control]
         fileMenuItem.submenu = fileMenu
         mainMenu.addItem(fileMenuItem)
 
@@ -345,6 +422,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
         nextTab.keyEquivalentModifierMask = [.command]
         let prevTab = viewMenu.addItem(withTitle: "Show Previous Tab", action: #selector(selectPreviousTab(_:)), keyEquivalent: "{")
         prevTab.keyEquivalentModifierMask = [.command]
+        viewMenu.addItem(.separator())
+        for number in 1...9 {
+            let item = viewMenu.addItem(withTitle: "Show Tab \(number)", action: #selector(selectNumberedTab(_:)), keyEquivalent: String(number))
+            item.keyEquivalentModifierMask = [.command]
+            item.tag = number
+        }
+        let lastTab = viewMenu.addItem(withTitle: "Show Last Tab", action: #selector(selectNumberedTab(_:)), keyEquivalent: "0")
+        lastTab.keyEquivalentModifierMask = [.command]
+        lastTab.tag = 0
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
 
@@ -381,8 +467,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
 
         let button = TabButtonView(frame: .zero)
         button.translatesAutoresizingMaskIntoConstraints = false
-        button.widthAnchor.constraint(equalToConstant: 160).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 36).isActive = true
 
         let tab = Tab(id: id, scrollView: scrollView, textView: textView, tabViewItem: tabViewItem, tabButton: button)
         tab.onChange = { [weak self] in self?.handleTabChange(tab) }
@@ -415,10 +500,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
         for t in tabs { t.tabButton.setSelected(t === tab, theme: colors) }
         window.makeFirstResponder(tab.textView)
         updateTitle()
+        writeManifest()
     }
 
     private func removeTab(_ tab: Tab) {
         guard let idx = tabs.firstIndex(where: { $0 === tab }) else { return }
+        let previouslyActive = activeTab
         tab.debounceTimer?.invalidate()
         tabView.removeTabViewItem(tab.tabViewItem)
         tabStack.removeArrangedSubview(tab.tabButton)
@@ -430,7 +517,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
             let fresh = makeTab(id: UUID().uuidString, fileURL: nil, content: "")
             addTab(fresh, select: true)
         } else {
-            selectTab(tabs[max(0, idx - 1)])
+            if let previouslyActive, previouslyActive !== tab {
+                selectTab(previouslyActive)
+            } else {
+                selectTab(tabs[max(0, idx - 1)])
+            }
             updateTabBarVisibility()
         }
         writeManifest()
@@ -450,6 +541,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
         let tab = makeTab(id: UUID().uuidString, fileURL: nil, content: "")
         addTab(tab, select: true)
         writeManifest()
+    }
+
+    @objc private func selectNumberedTab(_ sender: NSMenuItem) {
+        let index = sender.tag == 0 ? tabs.count - 1 : sender.tag - 1
+        guard tabs.indices.contains(index) else { return }
+        selectTab(tabs[index])
     }
 
     @objc private func selectNextTab(_ sender: Any?) {
@@ -587,22 +684,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
     }
 
     private func writeDraft(for tab: Tab) {
-        try? tab.textView.string.write(to: Autosave.tabDraftFile(id: tab.id), atomically: true, encoding: .utf8)
+        writeManifest()
+    }
+
+    private func persistSession() throws {
+        try FileManager.default.createDirectory(at: Autosave.dir, withIntermediateDirectories: true)
+        let session = Session(notes: tabs.map {
+            Session.Note(id: $0.id, filePath: $0.fileURL?.path, content: $0.textView.string)
+        }, selectedID: activeTab?.id)
+        try JSONEncoder().encode(session).write(to: Autosave.sessionFile, options: .atomic)
     }
 
     private func writeManifest() {
-        let entries = tabs.map { ManifestEntry(id: $0.id, filePath: $0.fileURL?.path) }
-        if let data = try? JSONEncoder().encode(entries) {
-            try? data.write(to: Autosave.manifestFile)
+        guard !isRestoringSession else { return }
+        do {
+            try persistSession()
+        } catch {
+            NSLog("Could not autosave session: %@", error.localizedDescription)
         }
     }
 
     private func restoreSession() {
+        isRestoringSession = true
+        defer { isRestoringSession = false }
+        if let data = try? Data(contentsOf: Autosave.sessionFile),
+           let session = try? JSONDecoder().decode(Session.self, from: data),
+           !session.notes.isEmpty {
+            for note in session.notes {
+                let url = note.filePath.map { URL(fileURLWithPath: $0) }
+                let tab = makeTab(id: note.id, fileURL: url, content: note.content)
+                if let url {
+                    tab.isDirty = (try? String(contentsOf: url, encoding: .utf8)) != note.content
+                } else {
+                    tab.isDirty = !note.content.isEmpty
+                }
+                addTab(tab, select: false)
+            }
+            if let selected = tabs.first(where: { $0.id == session.selectedID }) ?? tabs.first {
+                selectTab(selected)
+            }
+            return
+        }
         if let data = try? Data(contentsOf: Autosave.manifestFile),
            let entries = try? JSONDecoder().decode([ManifestEntry].self, from: data),
            !entries.isEmpty {
             for entry in entries {
-                let content = (try? String(contentsOf: Autosave.tabDraftFile(id: entry.id), encoding: .utf8)) ?? ""
+                let content = (try? String(contentsOf: Autosave.tabDraftFile(id: entry.id), encoding: .utf8))
+                    ?? entry.filePath.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) } ?? ""
                 let fileURL = entry.filePath.map { URL(fileURLWithPath: $0) }
                 let tab = makeTab(id: entry.id, fileURL: fileURL, content: content)
                 if let url = fileURL, let onDisk = try? String(contentsOf: url, encoding: .utf8) {
@@ -683,7 +811,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
     // MARK: Discard confirmation
 
     private func confirmDiscardIfNeeded(tab: Tab, proceed: @escaping () -> Void) {
-        guard tab.isDirty else { proceed(); return }
+        guard tab.isDirty && !tab.textView.string.isEmpty else { proceed(); return }
         let alert = NSAlert()
         alert.messageText = "Do you want to save changes to \(tab.fileURL?.lastPathComponent ?? "Untitled")?"
         alert.informativeText = "Your changes will be lost if you don't save them."
@@ -702,41 +830,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTe
 
     // MARK: Quit / window close
 
-    private func resolveAllDirtyTabs() -> Bool {
-        for tab in tabs where tab.isDirty {
-            selectTab(tab)
+    private func saveSessionBeforeClosing() -> Bool {
+        for tab in tabs { tab.debounceTimer?.invalidate() }
+        do {
+            try persistSession()
+            return true
+        } catch {
             let alert = NSAlert()
-            alert.messageText = "Do you want to save changes to \(tab.fileURL?.lastPathComponent ?? "Untitled")?"
-            alert.informativeText = "Your changes will be lost if you don't save them."
-            alert.addButton(withTitle: "Save")
-            alert.addButton(withTitle: "Don't Save")
-            alert.addButton(withTitle: "Cancel")
-            switch alert.runModal() {
-            case .alertFirstButtonReturn:
-                if !performSave(tab: tab) { return false }
-            case .alertSecondButtonReturn:
-                break
-            default:
-                return false
-            }
+            alert.messageText = "Could not preserve your notes"
+            alert.informativeText = "The app will stay open so you can save your notes. " + error.localizedDescription
+            alert.runModal()
+            return false
         }
-        return true
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        resolveAllDirtyTabs()
+        saveSessionBeforeClosing()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        resolveAllDirtyTabs() ? finishTerminate() : .terminateCancel
-    }
-
-    private func finishTerminate() -> NSApplication.TerminateReply {
-        try? FileManager.default.removeItem(at: Autosave.manifestFile)
-        for tab in tabs {
-            try? FileManager.default.removeItem(at: Autosave.tabDraftFile(id: tab.id))
-        }
-        return .terminateNow
+        saveSessionBeforeClosing() ? .terminateNow : .terminateCancel
     }
 }
 
