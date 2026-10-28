@@ -2,6 +2,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+UNIVERSAL=false
+case "${1:-}" in
+    "") ;;
+    --universal) UNIVERSAL=true ;;
+    *) echo "Usage: ./build.sh [--universal]" >&2; exit 1 ;;
+esac
+
 APP_NAME="NotepadMac"
 BUILD_DIR="build"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
@@ -12,7 +19,15 @@ mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
 echo "Compiling..."
-swiftc -target "$(uname -m)-apple-macosx11.0" -O -o "$APP_DIR/Contents/MacOS/$APP_NAME" Sources/main.swift -framework Cocoa
+if "$UNIVERSAL"; then
+    for arch in arm64 x86_64; do
+        swiftc -target "$arch-apple-macosx11.0" -O -o "$BUILD_DIR/$APP_NAME-$arch" Sources/main.swift -framework Cocoa
+    done
+    lipo -create "$BUILD_DIR/$APP_NAME-arm64" "$BUILD_DIR/$APP_NAME-x86_64" -output "$APP_DIR/Contents/MacOS/$APP_NAME"
+    rm "$BUILD_DIR/$APP_NAME-arm64" "$BUILD_DIR/$APP_NAME-x86_64"
+else
+    swiftc -target "$(uname -m)-apple-macosx11.0" -O -o "$APP_DIR/Contents/MacOS/$APP_NAME" Sources/main.swift -framework Cocoa
+fi
 
 if [ -f "AppIcon.png" ]; then
     echo "Generating app icon..."
